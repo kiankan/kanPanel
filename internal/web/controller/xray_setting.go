@@ -13,6 +13,7 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service"
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service/integration"
 	"github.com/mhsanaei/3x-ui/v3/internal/web/service/outbound"
+	"github.com/mhsanaei/3x-ui/v3/internal/web/session"
 	"github.com/mhsanaei/3x-ui/v3/internal/xray"
 
 	"github.com/gin-gonic/gin"
@@ -30,6 +31,7 @@ type XraySettingController struct {
 	PiaService                  integration.PiaService
 	OutboundSubscriptionService service.OutboundSubscriptionService
 	GeodataService              service.GeodataService
+	OutboundRelayService        service.OutboundRelayService
 }
 
 // NewXraySettingController creates a new XraySettingController and initializes its routes.
@@ -57,6 +59,7 @@ func (a *XraySettingController) initRouter(g *gin.RouterGroup) {
 	g.POST("/balancerStatus", a.balancerStatus)
 	g.POST("/balancerOverride", a.balancerOverride)
 	g.POST("/routeTest", a.routeTest)
+	g.POST("/outbound-relay", a.addOutboundRelay)
 
 	g.GET("/geodata/files", a.geodataFiles)
 	g.GET("/geodata/categories", a.geodataCategories)
@@ -432,6 +435,51 @@ func (a *XraySettingController) routeTest(c *gin.Context) {
 		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
 		return
 	}
+	jsonObj(c, result, nil)
+}
+
+// maxRelayConfigBytes bounds the pasted share-link/outbound JSON. A real
+// outbound config is at most a few KB; this is defense in depth on top of
+// the panel-wide MaxBodyBytes limit (web.go), rejecting an oversized field
+// before it reaches JSON parsing/regex processing.
+const maxRelayConfigBytes = 32 * 1024
+
+// addOutboundRelay parses a pasted share-link or raw outbound JSON and wires
+// up a new outbound + balancer + routing rule + client-facing VLESS+REALITY
+// inbound in one step (see OutboundRelayService.AddRelay). Admin-only, same
+// as every other route in this group — enforceTokenScope denies Monitor/
+// NodeSync-scoped tokens by default since this path is not in either
+// allowlist (internal/web/controller/api.go).
+func (a *XraySettingController) addOutboundRelay(c *gin.Context) {
+	config := c.PostForm("config")
+	if config == "" {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), common.NewError("config is required"))
+		return
+	}
+	if len(config) > maxRelayConfigBytes {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), common.NewErrorf("config is too large: over %d bytes", maxRelayConfigBytes))
+		return
+	}
+	remark := c.PostForm("remark")
+	if len(remark) > 255 {
+		remark = remark[:255]
+	}
+
+	user := session.GetLoginUser(c)
+	req := service.AddOutboundRelayRequest{
+		Config: config,
+		Remark: remark,
+	}
+	if user != nil {
+		req.UserId = user.Id
+	}
+
+	result, err := a.OutboundRelayService.AddRelay(req)
+	if err != nil {
+		jsonMsg(c, I18nWeb(c, "somethingWentWrong"), err)
+		return
+	}
+	a.XrayService.SetToNeedRestart()
 	jsonObj(c, result, nil)
 }
 

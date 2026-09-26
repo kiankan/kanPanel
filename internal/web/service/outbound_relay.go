@@ -18,13 +18,26 @@ import (
 	"github.com/mhsanaei/3x-ui/v3/internal/util/link"
 )
 
-// AddOutboundRelayRequest is the input for OutboundService.AddRelay: Config is
+// OutboundRelayService builds a client-facing relay: a new outbound (from a
+// share-link or raw JSON), wrapped in its own balancer, fed by a new local
+// inbound and routing rule. It is deliberately separate from the
+// service/outbound package's OutboundService (traffic stats, testing,
+// subscriptions) so this file's dependencies on XraySettingService,
+// InboundService and ServerService stay in package service without an
+// import cycle.
+type OutboundRelayService struct{}
+
+// AddOutboundRelayRequest is the input for OutboundRelayService.AddRelay: Config is
 // either a share-link (vless://, vmess://, trojan://, ss://,
 // hysteria2:///hy2://, wireguard:///wg://) or a raw Xray outbound JSON
 // object. Remark is optional and only shapes the generated tag/port/remark.
 type AddOutboundRelayRequest struct {
 	Config string `json:"config"`
 	Remark string `json:"remark"`
+	// UserId is the acting admin's id (session.GetLoginUser(c).Id at the
+	// controller), mirroring InboundController.addInbound so a relay's
+	// generated inbound is scoped the same way as one created by hand.
+	UserId int `json:"-"`
 }
 
 // AddOutboundRelayResult reports everything AddRelay created: the outbound
@@ -58,7 +71,7 @@ const relayInboundBasePort = 20000
 // balancer. The template save and the inbound creation are ordered so a
 // failure never leaves an orphaned outbound/balancer/rule with nothing
 // routing into it.
-func (s *OutboundService) AddRelay(req AddOutboundRelayRequest) (*AddOutboundRelayResult, error) {
+func (s *OutboundRelayService) AddRelay(req AddOutboundRelayRequest) (*AddOutboundRelayResult, error) {
 	outboundCfg, identity, err := parseRelayOutboundConfig(req.Config)
 	if err != nil {
 		return nil, err
@@ -182,6 +195,7 @@ func (s *OutboundService) AddRelay(req AddOutboundRelayRequest) (*AddOutboundRel
 	}
 
 	inbound := &model.Inbound{
+		UserId:         req.UserId,
 		Remark:         remark,
 		Enable:         true,
 		Port:           port,
